@@ -1,49 +1,40 @@
-// Tiny file-based database. No native modules, no external DB server needed.
-// Everything lives in data/db.json so the whole app runs with `npm install && npm start`.
-const fs = require('fs');
-const path = require('path');
+const { Pool } = require('pg');
 
-const DB_PATH = path.join(__dirname, 'data', 'db.json');
+// This connects to the permanent database link you got from Render
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } 
+});
 
 const DEFAULT_DATA = {
-  users: [],       // { id, username, passwordHash, color, createdAt }
-  servers: [],      // { id, name, inviteCode, ownerId, createdAt }
-  members: [],      // { serverId, userId, role }
-  channels: [],      // { id, serverId, name, createdAt }
-  messages: [],       // { id, channelId, userId, content, createdAt }
-  dms: [],              // { id, participants: [userId, userId], createdAt }
-  dmMessages: []          // { id, conversationId, userId, content, createdAt }
+  users: [], servers: [], members: [], channels: [], messages: [], dms: [], dmMessages: []
 };
 
-function ensureFile() {
-  const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify(DEFAULT_DATA, null, 2));
+// This creates the "table" in Postgres if it doesn't exist yet
+async function init() {
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_state (id INT PRIMARY KEY DEFAULT 1, data JSONB NOT NULL)`);
+  const res = await pool.query('SELECT data FROM app_state WHERE id = 1');
+  if (res.rowCount === 0) {
+    await pool.query('INSERT INTO app_state (data) VALUES ($1)', [DEFAULT_DATA]);
   }
 }
 
-function read() {
-  ensureFile();
-  const raw = fs.readFileSync(DB_PATH, 'utf-8');
-  try {
-    return JSON.parse(raw);
-  } catch (e) {
-    return JSON.parse(JSON.stringify(DEFAULT_DATA));
-  }
+async function read() {
+  await init();
+  const res = await pool.query('SELECT data FROM app_state WHERE id = 1');
+  return res.rows[0].data;
 }
 
-function write(data) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+async function write(data) {
+  await pool.query('UPDATE app_state SET data = $1 WHERE id = 1', [data]);
 }
 
-// Simple mutex-ish queue so rapid concurrent writes don't clobber each other
 let queue = Promise.resolve();
 function transact(fn) {
-  queue = queue.then(() => {
-    const data = read();
+  queue = queue.then(async () => {
+    const data = await read();
     const result = fn(data);
-    write(data);
+    await write(data);
     return result;
   });
   return queue;
