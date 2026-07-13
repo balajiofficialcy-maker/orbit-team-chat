@@ -33,7 +33,6 @@ const upload = multer({
   }
 });
 
-const PORT = process.env.PORT || 3000;
 // Random secret generated at boot. Fine for a hackathon deployment where the
 // server process stays up; set JWT_SECRET env var yourself for production use.
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
