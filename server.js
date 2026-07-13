@@ -502,6 +502,7 @@ io.on('connection', (socket) => {
   });
 });
 
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`\n  Orbit is live -> http://localhost:${PORT}\n`);
+    console.log(`Server is running on port ${PORT}`);
 });
