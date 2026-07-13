@@ -1,0 +1,22 @@
+{
+  "name": "orbit-team-chat",
+  "version": "1.0.0",
+  "description": "Orbit - real-time team chat for your hackathon squad",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "uuid": "^9.0.1",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.11.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
