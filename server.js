@@ -26,22 +26,20 @@ const upload = multer({
       cb(null, `${uuidv4()}${ext}`);
     }
   }),
-  limits: { fileSize: 8 * 1024 * 1024 }, // 8MB
+  limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!ALLOWED_IMAGE_TYPES.includes(file.mimetype)) return cb(new Error('Only image files are allowed'));
     cb(null, true);
   }
 });
 
-// Random secret generated at boot. Fine for a hackathon deployment where the
-// server process stays up; set JWT_SECRET env var yourself for production use.
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 
 const AVATAR_COLORS = ['#7C5CFC', '#00E5FF', '#FF6B9D', '#5CE1E6', '#FFB84C', '#6BFFA0', '#C77DFF'];
 function pickColor() { return AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)]; }
 
 function makeInviteCode() {
-  return crypto.randomBytes(4).toString('hex'); // 8 chars, e.g. "a1b2c3d4"
+  return crypto.randomBytes(4).toString('hex');
 }
 
 function publicUser(u) {
@@ -81,7 +79,7 @@ app.post('/api/register', async (req, res) => {
   if (username.length < 3 || username.length > 20) return res.status(400).json({ error: 'Username must be 3-20 characters' });
   if (password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
 
-  const data = db.read();
+  const data = await db.read();
   if (data.users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
     return res.status(409).json({ error: 'That username is already taken' });
   }
@@ -103,7 +101,7 @@ app.post('/api/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Username and password are required' });
 
-  const data = db.read();
+  const data = await db.read();
   const user = data.users.find(u => u.username.toLowerCase() === username.toLowerCase());
   if (!user) return res.status(401).json({ error: 'Invalid username or password' });
   const ok = await bcrypt.compare(password, user.passwordHash);
@@ -113,16 +111,16 @@ app.post('/api/login', async (req, res) => {
   res.json({ token, user: publicUser(user) });
 });
 
-app.get('/api/me', authMiddleware, (req, res) => {
-  const data = db.read();
+app.get('/api/me', authMiddleware, async (req, res) => {
+  const data = await db.read();
   const user = data.users.find(u => u.id === req.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json({ user: publicUser(user) });
 });
 
 // ---------- Server (team space) routes ----------
-app.get('/api/servers', authMiddleware, (req, res) => {
-  const data = db.read();
+app.get('/api/servers', authMiddleware, async (req, res) => {
+  const data = await db.read();
   const myServerIds = data.members.filter(m => m.userId === req.userId).map(m => m.serverId);
   const servers = data.servers
     .filter(s => myServerIds.includes(s.id))
@@ -134,11 +132,11 @@ app.get('/api/servers', authMiddleware, (req, res) => {
   res.json({ servers });
 });
 
-app.post('/api/servers', authMiddleware, (req, res) => {
+app.post('/api/servers', authMiddleware, async (req, res) => {
   const { name } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Server name is required' });
 
-  const data = db.read();
+  const data = await db.read();
   const server = {
     id: uuidv4(),
     name: name.trim().slice(0, 40),
@@ -158,11 +156,11 @@ app.post('/api/servers', authMiddleware, (req, res) => {
   });
 });
 
-app.post('/api/servers/join', authMiddleware, (req, res) => {
+app.post('/api/servers/join', authMiddleware, async (req, res) => {
   const { inviteCode } = req.body || {};
   if (!inviteCode) return res.status(400).json({ error: 'Invite code is required' });
 
-  const data = db.read();
+  const data = await db.read();
   const server = data.servers.find(s => s.inviteCode.toLowerCase() === String(inviteCode).trim().toLowerCase());
   if (!server) return res.status(404).json({ error: 'No team found with that invite code' });
 
@@ -170,8 +168,8 @@ app.post('/api/servers/join', authMiddleware, (req, res) => {
     return res.json({ server: { ...server, channels: data.channels.filter(c => c.serverId === server.id) } });
   }
 
-  db.transact(d => { d.members.push({ serverId: server.id, userId: req.userId, role: 'member' }); }).then(() => {
-    const fresh = db.read();
+  db.transact(d => { d.members.push({ serverId: server.id, userId: req.userId, role: 'member' }); }).then(async () => {
+    const fresh = await db.read();
     io.to(`server:${server.id}`).emit('member_joined', { serverId: server.id });
     res.json({
       server: {
@@ -183,17 +181,17 @@ app.post('/api/servers/join', authMiddleware, (req, res) => {
   });
 });
 
-app.get('/api/servers/:id/members', authMiddleware, (req, res) => {
-  const data = db.read();
+app.get('/api/servers/:id/members', authMiddleware, async (req, res) => {
+  const data = await db.read();
   if (!isMember(data, req.params.id, req.userId)) return res.status(403).json({ error: 'Not a member of this team' });
   const memberIds = data.members.filter(m => m.serverId === req.params.id).map(m => m.userId);
   const members = data.users.filter(u => memberIds.includes(u.id)).map(publicUser);
   res.json({ members });
 });
 
-app.post('/api/servers/:id/channels', authMiddleware, (req, res) => {
+app.post('/api/servers/:id/channels', authMiddleware, async (req, res) => {
   const { name } = req.body || {};
-  const data = db.read();
+  const data = await db.read();
   if (!isMember(data, req.params.id, req.userId)) return res.status(403).json({ error: 'Not a member of this team' });
   if (!name || !name.trim()) return res.status(400).json({ error: 'Channel name is required' });
 
@@ -210,8 +208,8 @@ app.post('/api/servers/:id/channels', authMiddleware, (req, res) => {
 });
 
 // ---------- Messages ----------
-app.get('/api/channels/:id/messages', authMiddleware, (req, res) => {
-  const data = db.read();
+app.get('/api/channels/:id/messages', authMiddleware, async (req, res) => {
+  const data = await db.read();
   const channel = data.channels.find(c => c.id === req.params.id);
   if (!channel) return res.status(404).json({ error: 'Channel not found' });
   if (!isMember(data, channel.serverId, req.userId)) return res.status(403).json({ error: 'Not a member of this team' });
@@ -240,8 +238,8 @@ function dmRoomId(userA, userB) {
   return [userA, userB].sort().join('__dm__');
 }
 
-app.get('/api/dms', authMiddleware, (req, res) => {
-  const data = db.read();
+app.get('/api/dms', authMiddleware, async (req, res) => {
+  const data = await db.read();
   const myDms = data.dms || [];
   const conversations = myDms.filter(d => d.participants.includes(req.userId));
   const result = conversations.map(c => {
@@ -252,11 +250,11 @@ app.get('/api/dms', authMiddleware, (req, res) => {
   res.json({ conversations: result });
 });
 
-app.post('/api/dms/start', authMiddleware, (req, res) => {
+app.post('/api/dms/start', authMiddleware, async (req, res) => {
   const { userId: targetId } = req.body || {};
   if (!targetId || targetId === req.userId) return res.status(400).json({ error: 'Invalid target user' });
 
-  const data = db.read();
+  const data = await db.read();
   const target = data.users.find(u => u.id === targetId);
   if (!target) return res.status(404).json({ error: 'User not found' });
 
@@ -272,8 +270,8 @@ app.post('/api/dms/start', authMiddleware, (req, res) => {
   });
 });
 
-app.get('/api/dms/:id/messages', authMiddleware, (req, res) => {
-  const data = db.read();
+app.get('/api/dms/:id/messages', authMiddleware, async (req, res) => {
+  const data = await db.read();
   const convo = (data.dms || []).find(d => d.id === req.params.id);
   if (!convo || !convo.participants.includes(req.userId)) return res.status(403).json({ error: 'Not part of this conversation' });
 
@@ -288,10 +286,10 @@ app.get('/api/dms/:id/messages', authMiddleware, (req, res) => {
 });
 
 // Search users to start a DM with
-app.get('/api/users/search', authMiddleware, (req, res) => {
+app.get('/api/users/search', authMiddleware, async (req, res) => {
   const q = String(req.query.q || '').toLowerCase().trim();
   if (!q) return res.json({ users: [] });
-  const data = db.read();
+  const data = await db.read();
   const matches = data.users
     .filter(u => u.id !== req.userId && u.username.toLowerCase().includes(q))
     .slice(0, 8)
@@ -300,8 +298,8 @@ app.get('/api/users/search', authMiddleware, (req, res) => {
 });
 
 // ---------- Socket.io realtime ----------
-const onlineUsers = new Map(); // userId -> Set of socketIds
-const voiceRooms = new Map(); // serverId -> Map(socketId -> { userId, username, color })
+const onlineUsers = new Map();
+const voiceRooms = new Map();
 
 function voiceRoomList(serverId) {
   const room = voiceRooms.get(serverId);
@@ -337,13 +335,13 @@ io.on('connection', (socket) => {
   onlineUsers.get(socket.userId).add(socket.id);
   io.emit('presence_update', { online: Array.from(onlineUsers.keys()) });
 
-  socket.on('join_server', (serverId) => {
-    const data = db.read();
+  socket.on('join_server', async (serverId) => {
+    const data = await db.read();
     if (isMember(data, serverId, socket.userId)) socket.join(`server:${serverId}`);
   });
 
-  socket.on('join_channel', (channelId) => {
-    const data = db.read();
+  socket.on('join_channel', async (channelId) => {
+    const data = await db.read();
     const channel = data.channels.find(c => c.id === channelId);
     if (channel && isMember(data, channel.serverId, socket.userId)) {
       socket.join(`channel:${channelId}`);
@@ -361,7 +359,7 @@ io.on('connection', (socket) => {
   socket.on('send_message', async ({ channelId, content, imageUrl }) => {
     if ((!content || !content.trim()) && !imageUrl) return;
     if (!channelId) return;
-    const data = db.read();
+    const data = await db.read();
     const channel = data.channels.find(c => c.id === channelId);
     if (!channel || !isMember(data, channel.serverId, socket.userId)) return;
 
@@ -383,9 +381,8 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ---- Voice chat (WebRTC signaling; server just relays, audio is peer-to-peer) ----
-  socket.on('voice_join', (serverId) => {
-    const data = db.read();
+  socket.on('voice_join', async (serverId) => {
+    const data = await db.read();
     if (!isMember(data, serverId, socket.userId)) return;
     const user = data.users.find(u => u.id === socket.userId);
     if (!user) return;
@@ -393,8 +390,6 @@ io.on('connection', (socket) => {
     if (!voiceRooms.has(serverId)) voiceRooms.set(serverId, new Map());
     const room = voiceRooms.get(serverId);
 
-    // Tell the newly-joined socket who else is already in the room, so it can
-    // initiate WebRTC offers to each existing peer.
     socket.emit('voice_existing_peers', { serverId, peers: voiceRoomList(serverId) });
 
     room.set(socket.id, { userId: socket.userId, username: user.username, color: user.color });
@@ -412,15 +407,13 @@ io.on('connection', (socket) => {
     io.to(`server:${serverId}`).emit('voice_peers', { serverId, peers: voiceRoomList(serverId) });
   });
 
-  // Relay WebRTC offers/answers/ICE candidates directly to the target peer.
   socket.on('voice_signal', ({ to, signal }) => {
     if (!to || !signal) return;
     io.to(to).emit('voice_signal', { from: socket.id, signal });
   });
 
-  // ---- Direct messages ----
-  socket.on('join_dm', (conversationId) => {
-    const data = db.read();
+  socket.on('join_dm', async (conversationId) => {
+    const data = await db.read();
     const convo = (data.dms || []).find(d => d.id === conversationId);
     if (convo && convo.participants.includes(socket.userId)) {
       socket.join(`dm:${conversationId}`);
@@ -434,7 +427,7 @@ io.on('connection', (socket) => {
   socket.on('send_dm', async ({ conversationId, content, imageUrl }) => {
     if ((!content || !content.trim()) && !imageUrl) return;
     if (!conversationId) return;
-    const data = db.read();
+    const data = await db.read();
     const convo = (data.dms || []).find(d => d.id === conversationId);
     if (!convo || !convo.participants.includes(socket.userId)) return;
 
@@ -467,7 +460,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ---- 1:1 video/audio calls (separate from team voice rooms) ----
   socket.on('call_user', ({ toUserId, conversationId, callType }) => {
     const targets = onlineUsers.get(toUserId);
     if (targets) {
