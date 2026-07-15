@@ -12,6 +12,7 @@
 </head>
 <body>
 
+<div id="wallpaper"></div>
 <canvas id="starfield"></canvas>
 
 <!-- ================= AUTH SCREEN ================= -->
@@ -44,6 +45,7 @@
           </label>
           <button type="submit" class="btn-primary">Enter orbit</button>
           <p class="form-error" id="login-error"></p>
+          <button type="button" class="link-btn" id="btn-forgot-password">Forgot password?</button>
         </form>
 
         <form id="register-form" class="auth-form hidden">
@@ -53,9 +55,25 @@
           <label>Password
             <input type="password" name="password" autocomplete="new-password" required minlength="4" />
           </label>
+          <label>Security Question <span class="optional-tag">optional</span>
+            <select name="questionIndex">
+              <option value="">-- Skip --</option>
+              <option value="0">What is your favorite programming language?</option>
+              <option value="1">What city were you born in?</option>
+              <option value="2">What is your pet's name?</option>
+              <option value="3">What was your first computer brand?</option>
+              <option value="4">What is your favorite hackathon snack?</option>
+            </select>
+          </label>
+          <label class="hidden" id="sec-answer-label">Your Answer
+            <input type="text" name="securityAnswer" autocomplete="off" placeholder="Type your answer" />
+          </label>
           <button type="submit" class="btn-primary">Launch account</button>
           <p class="form-error" id="register-error"></p>
         </form>
+
+        <div id="google-signin-area" class="google-signin-area hidden">
+        </div>
       </div>
     </div>
     <p class="auth-footnote">No email needed. Your team's data lives on whoever runs this server.</p>
@@ -66,7 +84,12 @@
 <div id="app-screen" class="screen hidden">
   <div class="app-shell">
 
-    <!-- Server rail -->
+    <button id="btn-mobile-menu" class="mobile-menu-btn" title="Menu">
+      <span></span><span></span><span></span>
+    </button>
+
+    <div id="sidebar-overlay" class="sidebar-overlay hidden"></div>
+
     <nav class="server-rail" id="server-rail">
       <div class="server-rail-list" id="server-list"></div>
       <button class="server-icon add-server" id="btn-add-server" title="Add or join a team">
@@ -74,8 +97,7 @@
       </button>
     </nav>
 
-    <!-- Channel sidebar -->
-    <aside class="channel-sidebar">
+    <aside class="channel-sidebar" id="channel-sidebar">
       <div class="server-header" id="server-header">
         <div>
           <h2 id="current-server-name">Select a team</h2>
@@ -121,16 +143,19 @@
       </div>
 
       <div class="sidebar-user">
-        <div class="avatar" id="me-avatar"></div>
+        <div class="avatar-wrapper" id="me-avatar-wrapper">
+          <div class="avatar" id="me-avatar"></div>
+          <img id="me-avatar-img" class="avatar-img hidden" alt="" />
+        </div>
         <div class="sidebar-user-info">
           <span id="me-username">—</span>
           <span class="status-dot online"></span>
         </div>
+        <button id="btn-settings" class="mini-btn" title="Settings">⚙️</button>
         <button id="btn-logout" class="mini-btn" title="Sign out">⏻</button>
       </div>
     </aside>
 
-    <!-- Chat main -->
     <main class="chat-main">
       <div class="chat-topbar">
         <span class="hash" id="chat-topbar-hash">#</span>
@@ -166,7 +191,6 @@
       </form>
     </main>
 
-    <!-- Members -->
     <aside class="member-list" id="member-list">
       <div class="member-list-label">Team</div>
       <div id="members-online"></div>
@@ -202,6 +226,131 @@
       <button type="submit" class="btn-primary">Create channel</button>
     </form>
     <button class="modal-close" id="channel-modal-close">✕</button>
+  </div>
+</div>
+
+<div id="forgot-modal-backdrop" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Reset Password</h3>
+    <div id="forgot-step-1">
+      <p class="modal-sub">Enter your username to get started.</p>
+      <form id="form-forgot-step1">
+        <input type="text" name="username" placeholder="Your username" maxlength="20" required />
+        <button type="submit" class="btn-primary">Find my account</button>
+      </form>
+      <p class="form-error" id="forgot-error-1"></p>
+    </div>
+    <div id="forgot-step-2" class="hidden">
+      <p class="modal-sub" id="forgot-question-text"></p>
+      <form id="form-forgot-step2">
+        <input type="text" name="answer" placeholder="Your answer" autocomplete="off" required />
+        <input type="password" name="newPassword" placeholder="New password (min 4 chars)" required minlength="4" />
+        <button type="submit" class="btn-primary">Reset password</button>
+      </form>
+      <p class="form-error" id="forgot-error-2"></p>
+    </div>
+    <button class="modal-close" id="forgot-modal-close">✕</button>
+  </div>
+</div>
+
+<div id="settings-modal-backdrop" class="modal-backdrop hidden">
+  <div class="modal modal-settings">
+    <h3>Settings</h3>
+    <div class="settings-tabs">
+      <button class="settings-tab active" data-stab="profile">Profile</button>
+      <button class="settings-tab" data-stab="appearance">Appearance</button>
+    </div>
+    <div class="settings-panel" id="settings-profile">
+      <div class="settings-avatar-section">
+        <div class="settings-avatar" id="settings-avatar-display">
+          <div class="avatar large" id="settings-avatar-initials"></div>
+          <img id="settings-avatar-img" class="avatar-img large hidden" alt="" />
+        </div>
+        <div>
+          <input type="file" id="avatar-upload-input" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+          <button type="button" class="btn-secondary btn-sm" id="btn-upload-avatar">Change Avatar</button>
+          <button type="button" class="btn-secondary btn-sm hidden" id="btn-remove-avatar">Remove</button>
+          <p class="settings-hint">JPG, PNG, GIF, or WebP. Max 8MB.</p>
+        </div>
+      </div>
+      <form id="form-update-username">
+        <label>Username
+          <input type="text" name="username" id="settings-username" maxlength="20" required minlength="3" />
+        </label>
+        <button type="submit" class="btn-primary btn-sm">Save Username</button>
+        <p class="form-error" id="settings-username-error"></p>
+      </form>
+      <div class="settings-secq-section">
+        <p class="settings-secq-label">Security Question <span id="secq-status"></span></p>
+        <form id="form-set-secq">
+          <select name="questionIndex" id="secq-select">
+            <option value="">-- Choose a question --</option>
+            <option value="0">What is your favorite programming language?</option>
+            <option value="1">What city were you born in?</option>
+            <option value="2">What is your pet's name?</option>
+            <option value="3">What was your first computer brand?</option>
+            <option value="4">What is your favorite hackathon snack?</option>
+          </select>
+          <input type="text" name="answer" id="secq-answer" placeholder="Your answer" autocomplete="off" />
+          <button type="submit" class="btn-secondary btn-sm">Set Security Question</button>
+          <p class="form-error" id="secq-error"></p>
+        </form>
+      </div>
+    </div>
+    <div class="settings-panel hidden" id="settings-appearance">
+      <p class="settings-section-title">Theme</p>
+      <div class="theme-grid">
+        <button class="theme-card active" data-theme="cyber">
+          <div class="theme-preview cyber-preview"></div>
+          <span>Cyber</span>
+        </button>
+        <button class="theme-card" data-theme="midnight">
+          <div class="theme-preview midnight-preview"></div>
+          <span>Midnight</span>
+        </button>
+        <button class="theme-card" data-theme="forest">
+          <div class="theme-preview forest-preview"></div>
+          <span>Forest</span>
+        </button>
+        <button class="theme-card" data-theme="sunset">
+          <div class="theme-preview sunset-preview"></div>
+          <span>Sunset</span>
+        </button>
+        <button class="theme-card" data-theme="light">
+          <div class="theme-preview light-preview"></div>
+          <span>Light</span>
+        </button>
+      </div>
+      <p class="settings-section-title" style="margin-top:20px">Wallpaper</p>
+      <div class="wallpaper-grid">
+        <button class="wallpaper-card active" data-wallpaper="none">
+          <div class="wallpaper-preview" style="background:#0a0c16"></div>
+          <span>None</span>
+        </button>
+        <button class="wallpaper-card" data-wallpaper="nebula">
+          <div class="wallpaper-preview" style="background:linear-gradient(135deg,#7c5cfc,#00e5ff,#ff6b9d)"></div>
+          <span>Nebula</span>
+        </button>
+        <button class="wallpaper-card" data-wallpaper="aurora">
+          <div class="wallpaper-preview" style="background:linear-gradient(135deg,#00e5ff,#4ade80,#7c5cfc)"></div>
+          <span>Aurora</span>
+        </button>
+        <button class="wallpaper-card" data-wallpaper="sunset">
+          <div class="wallpaper-preview" style="background:linear-gradient(135deg,#ff6b9d,#ffb84c,#ff4d89)"></div>
+          <span>Sunset</span>
+        </button>
+        <button class="wallpaper-card" data-wallpaper="matrix">
+          <div class="wallpaper-preview" style="background:linear-gradient(135deg,#0a2e0a,#00ff41,#0a2e0a)"></div>
+          <span>Matrix</span>
+        </button>
+        <button class="wallpaper-card" data-wallpaper="custom">
+          <div class="wallpaper-preview" style="background:repeating-conic-gradient(#333 0% 25%, #555 0% 50%) 50%/16px 16px"></div>
+          <span>Custom</span>
+        </button>
+      </div>
+      <input type="file" id="wallpaper-upload-input" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+    </div>
+    <button class="modal-close" id="settings-modal-close">✕</button>
   </div>
 </div>
 
