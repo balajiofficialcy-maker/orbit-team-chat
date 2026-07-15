@@ -14,6 +14,21 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+// ---------- Google Auth (optional) ----------
+let googleClient = null;
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+if (GOOGLE_CLIENT_ID) {
+  try {
+    const { OAuth2Client } = require('google-auth-library');
+    googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+    console.log('Google Sign-In enabled');
+  } catch (e) {
+    console.warn('google-auth-library not installed. Google Sign-In disabled.');
+  }
+} else {
+  console.log('Set GOOGLE_CLIENT_ID env var to enable Google Sign-In');
+}
+
 const UPLOAD_DIR = path.join(__dirname, 'data', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -43,12 +58,27 @@ function makeInviteCode() {
 }
 
 function publicUser(u) {
-  return { id: u.id, username: u.username, color: u.color, createdAt: u.createdAt };
+  return {
+    id: u.id,
+    username: u.username,
+    color: u.color,
+    avatarUrl: u.avatarUrl || null,
+    createdAt: u.createdAt
+  };
 }
 
 function signToken(user) {
   return jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '30d' });
 }
+
+// ---------- Security Questions ----------
+const SECURITY_QUESTIONS = [
+  "What is your favorite programming language?",
+  "What city were you born in?",
+  "What is your pet's name?",
+  "What was your first computer brand?",
+  "What is your favorite hackathon snack?"
+];
 
 // ---------- Middleware ----------
 app.use(express.json());
@@ -74,7 +104,7 @@ function isMember(data, serverId, userId) {
 
 // ---------- Auth routes ----------
 app.post('/api/register', async (req, res) => {
-  const { username, password } = req.body || {};
+  const { username, password, questionIndex, securityAnswer } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Username and password are required' });
   if (username.length < 3 || username.length > 20) return res.status(400).json({ error: 'Username must be 3-20 characters' });
   if (password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
@@ -89,8 +119,18 @@ app.post('/api/register', async (req, res) => {
     username,
     passwordHash,
     color: pickColor(),
+    avatarUrl: null,
     createdAt: new Date().toISOString()
   };
+
+  if (questionIndex !== undefined && securityAnswer && securityAnswer.trim()) {
+    if (questionIndex < 0 || questionIndex >= SECURITY_QUESTIONS.length) {
+      return res.status(400).json({ error: 'Invalid security question' });
+    }
+    user.securityQuestion = questionIndex;
+    user.securityAnswerHash = await bcrypt.hash(securityAnswer.trim().toLowerCase(), 10);
+  }
+
   await db.transact(d => { d.users.push(user); });
 
   const token = signToken(user);
@@ -111,11 +151,172 @@ app.post('/api/login', async (req, res) => {
   res.json({ token, user: publicUser(user) });
 });
 
+// ---------- Forgot Password ----------
+app.post('/api/forgot-password', async (req, res) => {
+  const { username } = req.body || {};
+  if (!username) return res.status(400).json({ error: 'Username is required' });
+
+  const data = await db.read();
+  const user = data.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+  if (!user) return res.status(404).json({ error: 'No account found with that username' });
+  if (user.securityQuestion === undefined || !user.securityAnswerHash) {
+    return res.json({ hasSecurityQuestion: false, error: 'no_security_question' });
+  }
+
+  res.json({ hasSecurityQuestion: true, question: SECURITY_QUESTIONS[user.securityQuestion] });
+});
+
+app.post('/api/forgot-password/verify', async (req, res) => {
+  const { username, answer, newPassword } = req.body || {};
+  if (!username || !answer || !newPassword) return res.status(400).json({ error: 'All fields are required' });
+  if (newPassword.length < 4) return res.status(400).json({ error: 'New password must be at least 4 characters' });
+
+  const data = await db.read();
+  const user = data.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!user.securityAnswerHash) return res.status(400).json({ error: 'No security question set' });
+
+  const ok = await bcrypt.compare(answer.trim().toLowerCase(), user.securityAnswerHash);
+  if (!ok) return res.status(401).json({ error: 'Incorrect answer. Try again.' });
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  await db.transact(d => {
+    const u = d.users.find(u => u.id === user.id);
+    if (u) u.passwordHash = passwordHash;
+  });
+
+  const token = signToken(user);
+  res.json({ token, user: publicUser(user) });
+});
+
+// ---------- Set/update security question ----------
+app.post('/api/security-question', authMiddleware, async (req, res) => {
+  const { questionIndex, answer } = req.body || {};
+  if (questionIndex === undefined || !answer || !answer.trim()) {
+    return res.status(400).json({ error: 'Question and answer are required' });
+  }
+  if (questionIndex < 0 || questionIndex >= SECURITY_QUESTIONS.length) {
+    return res.status(400).json({ error: 'Invalid question' });
+  }
+
+  const answerHash = await bcrypt.hash(answer.trim().toLowerCase(), 10);
+  await db.transact(d => {
+    const user = d.users.find(u => u.id === req.userId);
+    if (user) {
+      user.securityQuestion = questionIndex;
+      user.securityAnswerHash = answerHash;
+    }
+  });
+  res.json({ success: true });
+});
+
+// ---------- Google Sign-In ----------
+app.post('/api/google-login', async (req, res) => {
+  const { token: googleToken } = req.body || {};
+  if (!googleToken) return res.status(400).json({ error: 'Google token is required' });
+  if (!googleClient) return res.status(501).json({ error: 'Google Sign-In is not configured on this server' });
+
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken: googleToken,
+      audience: GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    const googleId = payload.sub;
+    const googleName = payload.name || payload.given_name || 'User';
+    const googlePicture = payload.picture || null;
+
+    const data = await db.read();
+    let user = data.users.find(u => u.googleId === googleId);
+
+    if (!user) {
+      let baseName = googleName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
+      if (!baseName) baseName = 'user';
+      let finalUsername = baseName;
+      let counter = 1;
+      while (data.users.some(u => u.username.toLowerCase() === finalUsername.toLowerCase())) {
+        finalUsername = `${baseName}${counter}`;
+        counter++;
+      }
+
+      user = {
+        id: uuidv4(),
+        username: finalUsername,
+        passwordHash: await bcrypt.hash(crypto.randomBytes(16).toString('hex'), 10),
+        color: pickColor(),
+        googleId,
+        avatarUrl: googlePicture,
+        createdAt: new Date().toISOString()
+      };
+      await db.transact(d => { d.users.push(user); });
+    } else if (googlePicture && !user.avatarUrl) {
+      await db.transact(d => {
+        const u = d.users.find(u => u.id === user.id);
+        if (u) u.avatarUrl = googlePicture;
+      });
+    }
+
+    const token = signToken(user);
+    res.json({ token, user: publicUser(user) });
+  } catch (e) {
+    console.error('Google login error:', e.message);
+    return res.status(401).json({ error: 'Invalid Google token' });
+  }
+});
+
+// ---------- Google config check (for frontend) ----------
+app.get('/api/google-config', (req, res) => {
+  res.json({ enabled: !!GOOGLE_CLIENT_ID, clientId: GOOGLE_CLIENT_ID || '' });
+});
+
 app.get('/api/me', authMiddleware, async (req, res) => {
   const data = await db.read();
   const user = data.users.find(u => u.id === req.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json({ user: publicUser(user) });
+});
+
+// ---------- User Profile ----------
+app.get('/api/user/profile', authMiddleware, async (req, res) => {
+  const data = await db.read();
+  const user = data.users.find(u => u.id === req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json({
+    user: {
+      ...publicUser(user),
+      hasSecurityQuestion: !!(user.securityAnswerHash),
+      securityQuestion: user.securityQuestion !== undefined ? SECURITY_QUESTIONS[user.securityQuestion] : null,
+      googleId: !!user.googleId
+    }
+  });
+});
+
+app.put('/api/user/profile', authMiddleware, async (req, res) => {
+  const { username, avatarUrl } = req.body || {};
+  const data = await db.read();
+  const user = data.users.find(u => u.id === req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  if (username !== undefined) {
+    const trimmed = username.trim().slice(0, 20);
+    if (trimmed.length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters' });
+    if (trimmed.toLowerCase() !== user.username.toLowerCase() &&
+        data.users.some(u => u.username.toLowerCase() === trimmed.toLowerCase())) {
+      return res.status(409).json({ error: 'That username is already taken' });
+    }
+  }
+
+  await db.transact(d => {
+    const u = d.users.find(u => u.id === req.userId);
+    if (u) {
+      if (username !== undefined) u.username = username.trim().slice(0, 20);
+      if (avatarUrl !== undefined) u.avatarUrl = avatarUrl;
+    }
+  });
+
+  const fresh = await db.read();
+  const updated = fresh.users.find(u => u.id === req.userId);
+  res.json({ user: publicUser(updated) });
 });
 
 // ---------- Server (team space) routes ----------
@@ -154,6 +355,25 @@ app.post('/api/servers', authMiddleware, async (req, res) => {
   }).then(() => {
     res.json({ server: { ...server, channels: [generalChannel, ideasChannel], memberCount: 1 } });
   });
+});
+
+// ---------- Rename Server ----------
+app.patch('/api/servers/:id', authMiddleware, async (req, res) => {
+  const { name } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
+
+  const data = await db.read();
+  const server = data.servers.find(s => s.id === req.params.id);
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+  if (server.ownerId !== req.userId) return res.status(403).json({ error: 'Only the team owner can rename' });
+
+  const newName = name.trim().slice(0, 40);
+  await db.transact(d => {
+    const s = d.servers.find(s => s.id === req.params.id);
+    if (s) s.name = newName;
+  });
+
+  res.json({ server: { ...server, name: newName } });
 });
 
 app.post('/api/servers/join', authMiddleware, async (req, res) => {
@@ -219,7 +439,7 @@ app.get('/api/channels/:id/messages', authMiddleware, async (req, res) => {
     .slice(-100)
     .map(m => {
       const user = data.users.find(u => u.id === m.userId);
-      return { ...m, username: user ? user.username : 'unknown', color: user ? user.color : '#888' };
+      return { ...m, username: user ? user.username : 'unknown', color: user ? user.color : '#888', avatarUrl: user ? user.avatarUrl || null : null };
     });
   res.json({ messages });
 });
@@ -280,12 +500,11 @@ app.get('/api/dms/:id/messages', authMiddleware, async (req, res) => {
     .slice(-100)
     .map(m => {
       const user = data.users.find(u => u.id === m.userId);
-      return { ...m, username: user ? user.username : 'unknown', color: user ? user.color : '#888' };
+      return { ...m, username: user ? user.username : 'unknown', color: user ? user.color : '#888', avatarUrl: user ? user.avatarUrl || null : null };
     });
   res.json({ messages });
 });
 
-// Search users to start a DM with
 app.get('/api/users/search', authMiddleware, async (req, res) => {
   const q = String(req.query.q || '').toLowerCase().trim();
   if (!q) return res.json({ users: [] });
@@ -377,7 +596,8 @@ io.on('connection', (socket) => {
     io.to(`channel:${channelId}`).emit('new_message', {
       ...message,
       username: user ? user.username : socket.username,
-      color: user ? user.color : '#888'
+      color: user ? user.color : '#888',
+      avatarUrl: user ? user.avatarUrl || null : null
     });
   });
 
@@ -392,7 +612,7 @@ io.on('connection', (socket) => {
 
     socket.emit('voice_existing_peers', { serverId, peers: voiceRoomList(serverId) });
 
-    room.set(socket.id, { userId: socket.userId, username: user.username, color: user.color });
+    room.set(socket.id, { userId: socket.userId, username: user.username, color: user.color, avatarUrl: user.avatarUrl || null });
     socket.join(`voice:${serverId}`);
     io.to(`server:${serverId}`).emit('voice_peers', { serverId, peers: voiceRoomList(serverId) });
   });
@@ -448,7 +668,8 @@ io.on('connection', (socket) => {
     io.to(`dm:${conversationId}`).emit('new_dm_message', {
       ...message,
       username: user ? user.username : socket.username,
-      color: user ? user.color : '#888'
+      color: user ? user.color : '#888',
+      avatarUrl: user ? user.avatarUrl || null : null
     });
 
     const otherId = convo.participants.find(p => p !== socket.userId);
@@ -495,5 +716,5 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
